@@ -17,33 +17,33 @@
 //process.env.NODE_ENV = 'production';
 process.env.NODE_ENV = 'development';
 
-const fs = require('fs');
-const http = require('http');
-const express = require('express');
-const bodyParser = require('body-parser');
-const morgan = require('morgan');
-const util = require('util');
-const xml2js = require('xml2js');
-const url = require('url');
-const ip = require('ip');
-const crypto = require('crypto');
-const fileStreamRotator = require('file-stream-rotator');
-const https = require('https');
-const cbor = require('cbor');
-const moment = require('moment');
+var fs = require('fs');
+var http = require('http');
+var express = require('express');
+var bodyParser = require('body-parser');
+var morgan = require('morgan');
+var util = require('util');
+var xml2js = require('xml2js');
+var url = require('url');
+var ip = require('ip');
+var crypto = require('crypto');
+var fileStreamRotator = require('file-stream-rotator');
+var https = require('https');
+var cbor = require('cbor');
+var moment = require('moment');
 
 const cors = require('cors');
 
 global.NOPRINT = 'true';
 global.ONCE = 'true';
 
-const cb = require('./mobius/cb');
-const responder = require('./mobius/responder');
-const resource = require('./mobius/resource');
-const security = require('./mobius/security');
-const fopt = require('./mobius/fopt');
-const tr = require('./mobius/tr');
-const sgn = require('./mobius/sgn');
+var cb = require('./mobius/cb');
+var responder = require('./mobius/responder');
+var resource = require('./mobius/resource');
+var security = require('./mobius/security');
+var fopt = require('./mobius/fopt');
+var tr = require('./mobius/tr');
+var sgn = require('./mobius/sgn');
 
 const db = require('./mobius/db_action');
 const db_sql = require('./mobius/sql_action');
@@ -71,10 +71,6 @@ const {
     lookup_update,
     lookup_delete } = require("./lookup");
 
-
-const { response_error_result } = require("./errorCallback");
-
-
 /////////////////////////////////////////
 // global variable....
 global.cache_resource_url = {};
@@ -89,12 +85,7 @@ const logDirectory = __dirname + '/log';
 const use_clustering = 1;
 const cluster = require('cluster');
 const os = require('os');
-const cpuCount =  3  //os.cpus().length;
-
-
-
-const ONE_DAY = (24) * (60) * (60) * (1000);
-
+const cpuCount = os.cpus().length;
 
 /////////////////////////////////////////
 // worker variables ....
@@ -118,6 +109,230 @@ const accessLogStream = fileStreamRotator.getStream({
 const app = express();
 app.use(cors());
 app.use(morgan('combined', {stream: accessLogStream}));
+
+function del_req_resource() {
+    db.getConnection((code, connection) => {
+        if (code === '200') {
+            db_sql.delete_req(connection, (err, delete_Obj) => {
+                if (!err) {
+                    console.log('deleted ' + delete_Obj.affectedRows + ' request resource(s).');
+                }
+                connection.release();
+            });
+        }
+        else {
+            console.log('[del_req_resource] No Connection');
+        }
+    });
+}
+
+function del_expired_resource() {
+    db.getConnection((code, connection) => {
+        if (code === '200') {
+            // this routine is that delete resource expired time exceed et of resource
+            var et = moment().utc().format('YYYYMMDDTHHmmss');
+            db_sql.delete_lookup_et(connection, et, (err) => {
+                if (!err) {
+                    console.log('---------------');
+                    console.log('delete resources expired et');
+                    console.log('---------------');
+                }
+                connection.release();
+            });
+        }
+        else {
+            console.log('[del_expired_resource] No Connection');
+        }
+    });
+}
+
+
+if (use_clustering) {
+    if (cluster.isPrimary) {
+        cluster.on('death', (worker) => {
+            console.log('worker' + worker.pid + ' died --> start again');
+            cluster.fork();
+        });
+
+
+        db.connect(usedbhost, 3306, 'root', usedbpass, (rsc) => {
+            if (rsc == '1') {
+                db.getConnection((code, connection) => {
+                    if (code === '200') {
+                        db_sql.set_tuning(connection, (err, results) => {
+                            if (err) {
+                                console.log('[set_tuning] error');
+                            }
+
+                            console.log('CPU Count:', cpuCount);
+                            for (var i = 0; i < cpuCount; i++) {
+                                worker[i] = cluster.fork();
+                            }
+
+                            cb.create(connection, (rsp) => {
+                                console.log(JSON.stringify(rsp));
+
+                                setInterval(del_req_resource, (24) * (60) * (60) * (1000));
+                                setInterval(del_expired_resource, (24) * (60) * (60) * (1000));
+
+                                require('./pxy_mqtt');
+                                require('./pxy_coap');
+                                require('./pxy_ws');
+
+                                if (usecsetype == 'mn' || usecsetype == 'asn') {
+                                    global.refreshIntervalId = setInterval(() => {
+                                        csr_custom.emit('register_remoteCSE');
+                                    }, 5000);
+                                }
+
+                                connection.release();
+                            });
+                        });
+                    }
+                    else {
+                        console.log('[db.connect] No Connection');
+                    }
+                });
+            }
+        });
+    }
+    else {
+        db.connect(usedbhost, 3306, 'root', usedbpass, (rsc) => {
+            if (rsc === '1') {
+                db.getConnection((code, connection) => {
+                    if (code === '200') {
+                        if (use_secure === 'disable') {
+                            http.globalAgent.maxSockets = 1000000;
+                            http.createServer(app).listen({port: usecsebaseport, agent: false}, () => {
+                                console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
+                                cb.create(connection, (rsp) => {
+                                    console.log(JSON.stringify(rsp));
+                                    //noti_mqtt_begin();
+
+                                    connection.release();
+                                });
+                            });
+                        }
+                        else {
+                            var options = {
+                                key: fs.readFileSync('server-key.pem'),
+                                cert: fs.readFileSync('server-crt.pem'),
+                                ca: fs.readFileSync('ca-crt.pem')
+                            };
+                            https.globalAgent.maxSockets = 1000000;
+                            https.createServer(options, app).listen({port: usecsebaseport, agent: false}, () => {
+                                console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
+                                cb.create(connection, (rsp) => {
+                                    console.log(JSON.stringify(rsp));
+                                    //noti_mqtt_begin();
+
+                                    connection.release();
+                                });
+                            });
+                        }
+                    }
+                    else {
+                        console.log('[db.connect] No Connection');
+                    }
+                });
+            }
+        });
+    }
+}
+else {
+    db.connect(usedbhost, 3306, 'root', usedbpass, (rsc) => {
+        if (rsc == '1') {
+            db.getConnection((code, connection) => {
+                if (code === '200') {
+                    cb.create(connection, (rsp) => {
+                        console.log(JSON.stringify(rsp));
+
+                        if (use_secure === 'disable') {
+                            http.globalAgent.maxSockets = 1000000;
+                            http.createServer(app).listen({port: usecsebaseport, agent: false}, () => {
+                                console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
+                                require('./pxy_mqtt');
+                                //noti_mqtt_begin();
+
+                                if (usecsetype === 'mn' || usecsetype === 'asn') {
+                                    global.refreshIntervalId = setInterval(() => {
+                                        csr_custom.emit('register_remoteCSE');
+                                    }, 5000);
+                                }
+                            });
+                        }
+                        else {
+                            var options = {
+                                key: fs.readFileSync('server-key.pem'),
+                                cert: fs.readFileSync('server-crt.pem'),
+                                ca: fs.readFileSync('ca-crt.pem')
+                            };
+                            https.globalAgent.maxSockets = 1000000;
+                            https.createServer(options, app).listen({port: usecsebaseport, agent: false}, () => {
+                                console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
+                                require('./pxy_mqtt');
+                                //noti_mqtt_begin();
+                                //require('./mobius/ts_agent');
+
+                                if (usecsetype === 'mn' || usecsetype === 'asn') {
+                                    global.refreshIntervalId = setInterval(() => {
+                                        csr_custom.emit('register_remoteCSE');
+                                    }, 5000);
+                                }
+                            });
+                        }
+
+                        connection.release();
+                    });
+                }
+                else {
+                    console.log('[db.connect] No Connection');
+                }
+            });
+        }
+    });
+}
+
+global.get_ri_list_sri = function (request, response, sri_list, ri_list, count, callback) {
+    if (sri_list.length <= count) {
+        callback('200');
+    }
+    else {
+        db_sql.get_ri_sri(request.db_connection, sri_list[count], (err, results) => {
+            if (!err) {
+                ri_list[count] = ((results.length == 0) ? sri_list[count] : results[0].ri);
+                results = null;
+
+                get_ri_list_sri(request, response, sri_list, ri_list, ++count, (code) => {
+                    callback(code);
+                });
+            }
+            else {
+                callback('500-1');
+            }
+        });
+    }
+};
+
+global.update_route = function (connection, cse_poa, callback) {
+    db_sql.select_csr_like(connection, usecsebase, (err, results_csr) => {
+        if (!err) {
+            for (var i = 0; i < results_csr.length; i++) {
+                var poa_arr = JSON.parse(results_csr[i].poa);
+                for (var j = 0; j < poa_arr.length; j++) {
+                    if (url.parse(poa_arr[j]).protocol == 'http:' || url.parse(poa_arr[j]).protocol == 'https:') {
+                        cse_poa[results_csr[i].ri.split('/')[2]] = poa_arr[j];
+                    }
+                }
+            }
+            results_csr = null;
+            callback('200');
+        }
+        else {
+            callback('500-1');
+        }
+    });
+};
 
 function make_short_nametype(body_Obj) {
     if (body_Obj[Object.keys(body_Obj)[0]]['$'] != null) {
@@ -154,290 +369,7 @@ function make_short_nametype(body_Obj) {
         }
     }
 }
-function extra_api_action(connection, url, callback) {
-    if (url == '/hit') {
-        // for backup hit count
-        if (0) {
-            var _hit_old = JSON.parse(fs.readFileSync('hit.json', 'utf-8'));
-            var _http = 0;
-            var _mqtt = 0;
-            var _coap = 0;
-            var _ws = 0;
 
-            for (var dd in _hit_old) {
-                if (_hit_old.hasOwnProperty(dd)) {
-                    for (var ff in _hit_old[dd]) {
-                        if (_hit_old[dd].hasOwnProperty(ff)) {
-                            if (Object.keys(_hit_old[dd][ff]).length > 0) {
-                                for (var gg in _hit_old[dd][ff]) {
-                                    if (_hit_old[dd][ff].hasOwnProperty(gg)) {
-                                        if (_hit_old[dd][ff][gg] == null) {
-                                            _hit_old[dd][ff][gg] = 0;
-                                        }
-                                        if (gg == 'H') {
-                                            _http = _hit_old[dd][ff][gg];
-                                        }
-                                        else if (gg == 'M') {
-                                            _mqtt = _hit_old[dd][ff][gg];
-                                        }
-                                        else if (gg == 'C') {
-                                            _coap = _hit_old[dd][ff][gg];
-                                        }
-                                        else if (gg == 'W') {
-                                            _ws = _hit_old[dd][ff][gg];
-                                        }
-                                    }
-                                }
-
-                                db_sql.set_hit_n(connection, dd, _http, _mqtt, _coap, _ws, (err, results) => {
-                                    results = null;
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (0) {
-            var count = 0;
-            setTimeout((count) => {
-                if (count > 250) {
-                    return;
-                }
-                var dd = moment().utc().subtract(count, 'days').format('YYYYMMDD');
-                var _http = 5000 + Math.random() * 50000;
-                var _mqtt = 1000 + Math.random() * 9000;
-                var _coap = 0;
-                var _ws = 0;
-
-                db_sql.set_hit_n(connection, dd, _http, _mqtt, _coap, _ws, (err, results) => {
-                    results = null;
-                    console.log(count);
-                    setTimeout(random_hit, 100, ++count);
-                });
-            }, 100, count);
-        }
-
-        db_sql.get_hit_all(connection, (err, result) => {
-            if (err) {
-                callback('500-1');
-            }
-            else {
-                callback('201', result);
-            }
-        });
-    }
-    else if (url == '/total_ae') {
-        db_sql.select_sum_ae(connection, function (err, result) {
-            if (err) {
-                callback('500-1');
-            }
-            else {
-                callback('201', result);
-            }
-        });
-    }
-    else if (url == '/total_cbs') {
-        db_sql.select_sum_cbs(connection, function (err, result) {
-            if (err) {
-                callback('500-1');
-            }
-            else {
-                callback('201', result);
-            }
-        });
-    }
-    else {
-        callback('200');
-    }
-}
-
-if (use_clustering) {
-    if (cluster.isPrimary) {
-
-        console.log(`Primary ${process.pid} is running & CPU Count:`, cpuCount);
-        for (let i = 0; i < cpuCount; i++) {
-            worker[i] = cluster.fork();
-        }
-
-        cluster.on('exit', (worker, code, signal) => {
-            console.log(`worker ${worker.process.pid} died--> start again`);
-            cluster.fork();
-        });
-
-        db.createPool( usedbhost, 3306, 'root', usedbpass ) ;
-        db.getConnection((code, connection) => {
-            if (code === '200') {
-                console.log(`db.getConnection OK`);
-                db_sql.set_tuning(connection, (err, results) => {
-                    if (err) {
-                        console.log('[set_tuning] error');
-                    }
-                });
-                cb.create(connection, (rsp) => {
-                    console.log(`cb.createOK`);
-                    console.log(JSON.stringify(rsp));
-
-                    setInterval(db.del_req_resource, ONE_DAY);
-                    setInterval(db.del_expired_resource, ONE_DAY);
-
-                    require('./pxy_mqtt');
-                    require('./pxy_coap');
-                    require('./pxy_ws');
-
-                    if (usecsetype == 'mn' || usecsetype == 'asn') {
-                        global.refreshIntervalId = setInterval(() => {
-                            csr_custom.emit('register_remoteCSE');
-                        }, 5000);
-                    }
-
-                    connection.release();
-                });
-
-            }
-            else {
-                console.log('[db.connect] No Connection');
-            }
-        });
-    }
-    else {
-        console.log(`Worker ${process.pid} started`);
-
-        db.createPool( usedbhost, 3306, 'root', usedbpass ) ;
-        db.getConnection((code, connection) => {
-            if (code === '200' && use_secure === 'disable') {
-
-                http.globalAgent.maxSockets = 1000000;
-                http.createServer(app).listen({port: usecsebaseport, agent: false}, () => {
-                    console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
-                    cb.create(connection, (rsp) => {
-                        console.log(JSON.stringify(rsp));
-                        //noti_mqtt_begin();
-                        connection.release();
-                    });
-                });
-
-            }
-            else if (code === '200' && use_secure === 'enable'  ){
-                const options = {
-                    key: fs.readFileSync('server-key.pem'),
-                    cert: fs.readFileSync('server-crt.pem'),
-                    ca: fs.readFileSync('ca-crt.pem')
-                };
-
-                https.globalAgent.maxSockets = 1000000;
-                https.createServer(options, app).listen({port: usecsebaseport, agent: false}, () => {
-                    console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
-                    cb.create(connection, (rsp) => {
-                        console.log(JSON.stringify(rsp));
-                        //noti_mqtt_begin();
-                        connection.release();
-                    });
-                });
-            }
-            else {
-                console.log('[db.connect] No Connection');
-            }
-        });
-    }
-
-}
-else {
-
-    db.createPool( usedbhost, 3306, 'root', usedbpass ) ;
-    db.getConnection((code, connection) => {
-        if (code === '200' && use_secure === 'disable' ) {
-            cb.create(connection, (rsp) => {
-                console.log(JSON.stringify(rsp));
-
-                http.globalAgent.maxSockets = 1000000;
-                http.createServer(app).listen({port: usecsebaseport, agent: false}, () => {
-                    console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
-                    require('./pxy_mqtt');
-                    //noti_mqtt_begin();
-
-                    if (usecsetype === 'mn' || usecsetype === 'asn') {
-                        global.refreshIntervalId = setInterval(() => {
-                            csr_custom.emit('register_remoteCSE');
-                        }, 5000);
-                    }
-                });
-
-                connection.release();
-            });
-        }
-        else if ( code === '200' && use_secure === 'disable' ) {
-
-            cb.create(connection, (rsp) => {
-                let options = {
-                    key: fs.readFileSync('server-key.pem'),
-                    cert: fs.readFileSync('server-crt.pem'),
-                    ca: fs.readFileSync('ca-crt.pem')
-                };
-
-                https.globalAgent.maxSockets = 1000000;
-                https.createServer(options, app).listen({port: usecsebaseport, agent: false}, () => {
-                    console.log('mobius server (' + ip.address() + ') running at ' + usecsebaseport + ' port');
-                    require('./pxy_mqtt');
-                    //noti_mqtt_begin();
-                    //require('./mobius/ts_agent');
-
-                    if (usecsetype === 'mn' || usecsetype === 'asn') {
-                        global.refreshIntervalId = setInterval(() => {
-                            csr_custom.emit('register_remoteCSE');
-                        }, 5000);
-                    }
-                });
-
-                connection.release();
-            });
-        }
-        else {
-            console.log('[db.connect] No Connection');
-        }
-    });
-}
-
-global.get_ri_list_sri = function (request, response, sri_list, ri_list, count, callback) {
-    if (sri_list.length <= count) {
-        callback('200');
-    }
-    else {
-        db_sql.get_ri_sri(request.db_connection, sri_list[count], (err, results) => {
-            if (!err) {
-                ri_list[count] = ((results.length == 0) ? sri_list[count] : results[0].ri);
-                results = null;
-
-                get_ri_list_sri(request, response, sri_list, ri_list, ++count, (code) => {
-                    callback(code);
-                });
-            }
-            else {
-                callback('500-1');
-            }
-        });
-    }
-};
-global.update_route = function (connection, cse_poa, callback) {
-    db_sql.select_csr_like(connection, usecsebase, (err, results_csr) => {
-        if (!err) {
-            for (var i = 0; i < results_csr.length; i++) {
-                var poa_arr = JSON.parse(results_csr[i].poa);
-                for (var j = 0; j < poa_arr.length; j++) {
-                    if (url.parse(poa_arr[j]).protocol == 'http:' || url.parse(poa_arr[j]).protocol == 'https:') {
-                        cse_poa[results_csr[i].ri.split('/')[2]] = poa_arr[j];
-                    }
-                }
-            }
-            results_csr = null;
-            callback('200');
-        }
-        else {
-            callback('500-1');
-        }
-    });
-};
 global.make_json_obj = function (bodytype, str, callback) {
     try {
         if (bodytype === 'xml') {
@@ -487,6 +419,7 @@ global.make_json_obj = function (bodytype, str, callback) {
         callback('0');
     }
 };
+
 global.make_json_arraytype = function (body_Obj) {
     for (var prop in body_Obj) {
         if (body_Obj.hasOwnProperty(prop)) {
@@ -592,6 +525,218 @@ global.make_json_arraytype = function (body_Obj) {
     }
 };
 
+var resultStatusCode = {
+    '301-3': ['405', '4005', "forwarding with mqtt is not supported"],
+    '301-4': ['405', '4005', "protocol in poa of csr is not supported"],
+
+    '400-1': ['400', '4000', "BAD REQUEST: X-M2M-RI is none"],
+    '400-2': ['400', '4000', "BAD REQUEST: X-M2M-Origin header is Mandatory"],
+    '400-3': ['400', '4000', "BAD REQUEST: not supported resource type requested"],
+    '400-4': ['400', '4000', "BAD REQUEST: not parse your body"],
+    '400-5': ['400', '4000', "BAD REQUEST: [parse_to_json] do not parse xml body"],
+    '400-6': ['400', '4000', "BAD REQUEST: [parse_to_json] do not parse cbor body"],
+    '400-7': ['400', '4000', "BAD REQUEST: [parse_to_json] root tag of body is not matched"],
+    '400-8': ['400', '4000', "BAD REQUEST: (aa, at, poa, acpi, srt, nu, mid, macp, rels, rqps, srv) attribute should be json array format"],
+    '400-9': ['400', '4000', "BAD REQUEST: (lbl) attribute should be json array format"],
+    '400-10': ['400', '4000', "BAD REQUEST: (enc.net) attribute should be json array format"],
+    '400-11': ['400', '4000', "BAD REQUEST: (enc) attribute should have net key as child in json format"],
+    '400-12': ['400', '4000', "BAD REQUEST: (pv.acr, pvs.acr) attribute should be json array format"],
+    '400-13': ['400', '4000', "BAD REQUEST: (pv.acr.acor, pvs.acr.acor) attribute should be json array format"],
+    '400-14': ['400', '4000', "BAD REQUEST: (pv.acr.acco, pvs.acr.acco) attribute should be json array format"],
+    '400-15': ['400', '4000', "BAD REQUEST: (pv.acr.acco.acip.ipv4, pvs.acr.acco.acip.ipv4) attribute should be json array format"],
+    '400-16': ['400', '4000', "BAD REQUEST: (pv.acr.acco.acip.ipv6, pvs.acr.acco.acip.ipv6) attribute should be json array format"],
+    '400-17': ['400', '4000', "BAD REQUEST: (pv.acr.acco.actw, pvs.acr.acco.actw) attribute should be json array format"],
+    '400-18': ['400', '4000', "BAD REQUEST: (uds, cas) attribute should be json array format"],
+    '400-19': ['400', '4000', "BAD REQUEST: [check_notification] post request without ty value is but body is not for notification"],
+    '400-20': ['400', '4000', "BAD REQUEST: [check_notification] content-type is none"],
+    '400-21': ['400', '4000', "BAD REQUEST: X-M2M-RTU is none"],
+    '400-22': ['400', '4000', "BAD REQUEST: \'Not Present\' attribute"],
+    '400-23': ['400', '4000', "BAD REQUEST: .acr must have values"],
+    '400-24': ['400', '4000', "BAD REQUEST: nu must have values"],
+    '400-25': ['400', '4000', "BAD REQUEST: attribute is not defined"],
+    '400-26': ['400', '4000', "BAD REQUEST: attribute is \'Mandatory\' attribute"],
+    '400-27': ['400', '4000', "BAD REQUEST: expiration time is before now"],
+    '400-28': ['400', '4000', "BAD REQUEST: ASN CSE can not have child CSE (remoteCSE)"],
+    '400-29': ['400', '4000', "BAD REQUEST: mni is negative value"],
+    '400-30': ['400', '4000', "BAD REQUEST: mbs is negative valuee"],
+    '400-31': ['400', '4000', "BAD REQUEST: mia is negative value"],
+    '400-32': ['400', '4000', "BAD REQUEST: contentInfo(cnf) format is not match"],
+    '400-33': ['400', '6010', "MAX_NUMBER_OF_MEMBER_EXCEEDED"],
+    '400-34': ['400', '6011', "can not create group because csy is ABANDON_GROUP when MEMBER_TYPE_INCONSISTENT"],
+    '400-35': ['400', '4000', "BAD REQUEST: mgmtDefinition is not match with mgmtObj resource"],
+    '400-36': ['400', '4000', "BAD REQUEST: ty does not supported"],
+    '400-37': ['400', '4000', "BAD REQUEST: transaction resource could not create"],
+    '400-40': ['400', '4000', "BAD REQUEST: body is empty"],
+    '400-41': ['400', '4000', "BAD REQUEST"],
+    '400-42': ['400', '4000', "BAD REQUEST: ty is different with body"],
+    '400-43': ['400', '4000', "BAD REQUEST: rcn or fu query is not supported at POST request"],
+    '400-44': ['400', '4000', "BAD REQUEST: rcn or fu query is not supported at GET request"],
+    '400-45': ['400', '4000', "BAD REQUEST: rcn or fu query is not supported at PUT request"],
+    '400-46': ['400', '4000', "BAD REQUEST: rcn or fu query is not supported at DELETE request"],
+    '400-47': ['400', '4000', "BAD REQUEST: protocol in poa of ae is not supported"],
+    '400-50': ['400', '4000', "BAD REQUEST: state of transaction is mismatch"],
+    '400-51': ['400', '4000', "BAD REQUEST: mgmtObj requested is not match with content type of body"],
+    '400-52': ['400', '4000', "BAD REQUEST: ty does not supported"],
+    '400-53': ['400', '4000', "BAD REQUEST: this resource of mgmtObj is not supported"],
+    '400-54': ['400', '4000', "BAD REQUEST: cdn of flexCotainer is not match with fcnt resource"],
+
+    '403-1': ['403', '4107', "OPERATION_NOT_ALLOWED: AE-ID is not allowed"],
+    '403-2': ['403', '5203', "TARGET_NOT_SUBSCRIBABLE: request ty creating can not create under parent resource"],
+    '403-3': ['403', '4103', "ACCESS DENIED"],
+    '403-4': ['403', '4107', "OPERATION_NOT_ALLOWED: APP-ID in AE is not allowed"],
+    '403-5': ['403', '4107', "[app.use] ACCESS DENIED (fopt)"],
+    '403-6': ['403', '4109', "NO_MEMBERS: memberID in parent group is empty"],
+
+    '404-1': ['404', '4004', "resource does not exist (get_target_url)"],
+    '404-2': ['404', '4004', "RESOURCE DOES NOT FOUND"],
+    '404-3': ['404', '4004', "csebase is not found"],
+    '404-4': ['404', '4004', "group resource does not exist"],
+    '404-5': ['404', '4004', "response is not from fanOutPoint"],
+    '404-6': ['404', '4004', "AE for notify is not found"],
+    '404-7': ['404', '4004', "AE for notify does not exist"],
+
+    '405-1': ['405', '4005', "OPERATION_NOT_ALLOWED: CSEBase can not be created by others"],
+    '405-2': ['405', '4005', "OPERATION_NOT_ALLOWED: req is not supported when post request"],
+    '405-3': ['405', '4005', "OPERATION_NOT_ALLOWED: we do not support resource type requested"],
+    '405-4': ['405', '4005', "OPERATION_NOT_ALLOWED: rt query is not supported"],
+    '405-5': ['405', '4005', "OPERATION_NOT_ALLOWED: we do not support to create resource"],
+    '405-6': ['405', '4005', "OPERATION NOT ALLOWED: disr attribute is true"],
+    '405-7': ['405', '4005', "OPERATION NOT ALLOWED: Update cin is not supported"],
+    '405-8': ['405', '4005', "OPERATION NOT ALLOWED: req is not supported when put request"],
+    '405-9': ['405', '4005', "OPERATION_NOT_ALLOWED: csebase is not supported when put request"],
+    '405-10': ['405', '4005', "OPERATION_NOT_ALLOWED: notification with mqtt is not supported"],
+    '405-11': ['405', '4005', "OPERATION_NOT_ALLOWED: notification with ws is not supported"],
+    '405-12': ['405', '4005', "OPERATION_NOT_ALLOWED: notification with coap is not supported"],
+
+    '406-1': ['406', '5207', "NOT_ACCEPTABLE: can not create cin because mni value is zero"],
+    '406-2': ['406', '5207', "NOT_ACCEPTABLE: can not create cin because mbs value is zero"],
+    '406-3': ['406', '5207', "NOT_ACCEPTABLE: cs is exceed mbs"],
+
+    '409-1': ['409', '4005', "can not use post, put method at latest resource"],
+    '409-2': ['409', '4005', "can not use post, put method at oldest resource"],
+    '409-3': ['409', '4005', "resource name can not use that is keyword"],
+    '409-4': ['409', '4005', "resource requested is not supported"],
+    '409-5': ['409', '4105', "resource is already exist"],
+    '409-6': ['409', '4005', "[create_action] aei is duplicated"],
+
+    '423-1': ['423', '4230', "LOCKED: this resource was occupied by others"],
+
+    '500-1': ['500', '5000', "database error"],
+    '500-2': ['500', '5204', "SUBSCRIPTION_VERIFICATION_INITIATION_FAILED"],
+    '500-4': ['500', '5000', "[create_action] create resource error"],
+    '500-5': ['500', '5000', "DB Error : No Connection Pool"],
+
+    '501-1': ['501', '5001', "response with hierarchical resource structure mentioned in onem2m spec is not supported instead all the requested resources will be returned !"]
+
+};
+
+function response_error_result(request, response, code, callback) {
+    responder.error_result(request, response, resultStatusCode[code][0], resultStatusCode[code][1], resultStatusCode[code][2], () => {
+        callback();
+    });
+}
+
+function extra_api_action(connection, url, callback) {
+    if (url == '/hit') {
+        // for backup hit count
+        if (0) {
+            var _hit_old = JSON.parse(fs.readFileSync('hit.json', 'utf-8'));
+            var _http = 0;
+            var _mqtt = 0;
+            var _coap = 0;
+            var _ws = 0;
+
+            for (var dd in _hit_old) {
+                if (_hit_old.hasOwnProperty(dd)) {
+                    for (var ff in _hit_old[dd]) {
+                        if (_hit_old[dd].hasOwnProperty(ff)) {
+                            if (Object.keys(_hit_old[dd][ff]).length > 0) {
+                                for (var gg in _hit_old[dd][ff]) {
+                                    if (_hit_old[dd][ff].hasOwnProperty(gg)) {
+                                        if (_hit_old[dd][ff][gg] == null) {
+                                            _hit_old[dd][ff][gg] = 0;
+                                        }
+                                        if (gg == 'H') {
+                                            _http = _hit_old[dd][ff][gg];
+                                        }
+                                        else if (gg == 'M') {
+                                            _mqtt = _hit_old[dd][ff][gg];
+                                        }
+                                        else if (gg == 'C') {
+                                            _coap = _hit_old[dd][ff][gg];
+                                        }
+                                        else if (gg == 'W') {
+                                            _ws = _hit_old[dd][ff][gg];
+                                        }
+                                    }
+                                }
+
+                                db_sql.set_hit_n(connection, dd, _http, _mqtt, _coap, _ws, (err, results) => {
+                                    results = null;
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (0) {
+            var count = 0;
+            setTimeout((count) => {
+                if (count > 250) {
+                    return;
+                }
+                var dd = moment().utc().subtract(count, 'days').format('YYYYMMDD');
+                var _http = 5000 + Math.random() * 50000;
+                var _mqtt = 1000 + Math.random() * 9000;
+                var _coap = 0;
+                var _ws = 0;
+
+                db_sql.set_hit_n(connection, dd, _http, _mqtt, _coap, _ws, (err, results) => {
+                    results = null;
+                    console.log(count);
+                    setTimeout(random_hit, 100, ++count);
+                });
+            }, 100, count);
+        }
+
+        db_sql.get_hit_all(connection, (err, result) => {
+            if (err) {
+                callback('500-1');
+            }
+            else {
+                callback('201', result);
+            }
+        });
+    }
+    else if (url == '/total_ae') {
+        db_sql.select_sum_ae(connection, function (err, result) {
+            if (err) {
+                callback('500-1');
+            }
+            else {
+                callback('201', result);
+            }
+        });
+    }
+    else if (url == '/total_cbs') {
+        db_sql.select_sum_cbs(connection, function (err, result) {
+            if (err) {
+                callback('500-1');
+            }
+            else {
+                callback('201', result);
+            }
+        });
+    }
+    else {
+        callback('200');
+    }
+}
+
+
+
 var onem2mParser = bodyParser.text(
     {
         limit: '5mb',
@@ -616,8 +761,10 @@ app.post(onem2mParser, (request, response) => {
 
     var fullBody = '';
     request.on('data', (chunk) => fullBody += chunk.toString() );
+
     request.on('end', () => {
         request.body = fullBody;
+
         console.log("myTest-> " + request.body);
 
         db.getConnection((code, connection) => {
@@ -892,6 +1039,7 @@ app.post(onem2mParser, (request, response) => {
         });
     });
 });
+
 app.get(onem2mParser, (request, response) => {
     var fullBody = '';
     request.on('data', (chunk) => {
@@ -1072,6 +1220,7 @@ app.get(onem2mParser, (request, response) => {
         });
     });
 });
+
 app.put(onem2mParser, (request, response) => {
     var fullBody = '';
     request.on('data', (chunk) => {
@@ -1281,6 +1430,7 @@ app.put(onem2mParser, (request, response) => {
         });
     });
 });
+
 app.delete(onem2mParser, (request, response) => {
     var fullBody = '';
     request.on('data', (chunk) => {
@@ -1462,8 +1612,147 @@ app.delete(onem2mParser, (request, response) => {
     });
 });
 
+// function check_notification(request, response, callback) {
+//     if (request.headers.hasOwnProperty('content-type')) {
+//         if (request.headers['content-type'].includes('ty')) { // post
+//             callback('post');
+//         }
+//         else {
+//             if (request.headers.rootnm == 'sgn') {
+//                 callback('notify');
+//             }
+//             else {
+//                 callback('400-19');
+//             }
+//         }
+//     }
+//     else {
+//         callback('400-20');
+//     }
+// }
+//
+// function check_ae_notify(request, response, callback) {
+//     var ri = request.targetObject[Object.keys(request.targetObject)[0]].ri;
+//     console.log('[check_ae_notify] : ' + ri);
+//     db_sql.select_ae(ri, (err, result_ae) => {
+//         if (!err) {
+//             if (result_ae.length == 1) {
+//                 var point = {};
+//                 var poa_arr = JSON.parse(result_ae[0].poa);
+//                 for (var i = 0; i < poa_arr.length; i++) {
+//                     var poa = url.parse(poa_arr[i]);
+//                     if (poa.protocol == 'http:') {
+//                         console.log('send notification to ' + poa_arr[i]);
+//                         notify_http(poa.hostname, poa.port, poa.path, request.method, request.headers, request.body, (code, res) => {
+//                             callback(code, res)
+//                         });
+//                     }
+//                     else if (poa.protocol == 'coap:') {
+//                         console.log('send notification to ' + poa_arr[i]);
+//                         callback('405-12');
+//                     }
+//                     else if (poa.protocol == 'mqtt:') {
+//                         callback('405-10');
+//                     }
+//                     else if (poa.protocol == 'ws:') {
+//                         callback('405-11');
+//                     }
+//                     else {
+//                         callback('400-47');
+//                     }
+//                 }
+//             }
+//             else {
+//                 callback('404-6');
+//             }
+//         }
+//         else {
+//             console.log('[check_ae_notify] query error: ' + result_ae.message);
+//             callback('500-1');
+//         }
+//     });
+// }
+//
+// function check_csr(request, response, callback) {
+//     var ri = util.format('/%s/%s', usecsebase, url.parse(request.absolute_url).pathname.split('/')[1]);
+//     console.log('[check_csr] : ' + ri);
+//     db_sql.select_csr(request.db_connection, ri, (err, result_csr) => {
+//         if (!err) {
+//             if (result_csr.length == 1) {
+//                 var point = {};
+//                 point.forwardcbname = result_csr[0].cb.replace('/', '');
+//                 var poa_arr = JSON.parse(result_csr[0].poa);
+//                 for (var i = 0; i < poa_arr.length; i++) {
+//                     var poa = url.parse(poa_arr[i]);
+//                     if (poa.protocol == 'http:') {
+//                         point.forwardcbhost = poa.hostname;
+//                         point.forwardcbport = poa.port;
+//
+//                         console.log('csebase forwarding to ' + point.forwardcbname);
+//
+//                         forward_http(point.forwardcbhost, point.forwardcbport, request.url, request.method, request.headers, request.body, (code, _res) => {
+//                             if (code === '200') {
+//                                 var res = JSON.parse(JSON.stringify(_res));
+//                                 _res = null;
+//                                 if (res.headers.hasOwnProperty('content-type')) {
+//                                     response.setHeader('Content-Type', res.headers['content-type']);
+//                                 }
+//
+//                                 if (res.headers.hasOwnProperty('x-m2m-ri')) {
+//                                     response.setHeader('X-M2M-RI', res.headers['x-m2m-ri']);
+//                                 }
+//
+//                                 if (res.headers.hasOwnProperty('x-m2m-rvi')) {
+//                                     response.setHeader('X-M2M-RVI', res.headers['x-m2m-rvi']);
+//                                 }
+//
+//                                 if (res.headers.hasOwnProperty('x-m2m-rsc')) {
+//                                     response.setHeader('X-M2M-RSC', res.headers['x-m2m-rsc']);
+//                                 }
+//
+//                                 if (res.headers.hasOwnProperty('content-location')) {
+//                                     response.setHeader('Content-Location', res.headers['content-location']);
+//                                 }
+//
+//                                 response.body = res.body;
+//                                 response.statusCode = res.statusCode;
+//
+//                                 callback('301-2');
+//                             }
+//                             else {
+//                                 callback(code);
+//                             }
+//                         });
+//                     }
+//                     else if (poa.protocol == 'mqtt:') {
+//                         point.forwardcbmqtt = poa.hostname;
+//                         console.log('forwarding with mqtt is not supported');
+//
+//                         callback('301-3');
+//                     }
+//                     else {
+//                         console.log('protocol in poa of csr is not supported');
+//
+//                         callback('301-4');
+//                     }
+//                 }
+//                 result_csr = null;
+//             }
+//             else {
+//                 result_csr = null;
+//                 callback('404-3');
+//             }
+//         }
+//         else {
+//             console.log('[check_csr] query error: ' + result_csr.message);
+//             callback('404-3');
+//         }
+//     });
+// }
+
+
 function notify_http(hostname, port, path, method, headers, bodyString, callback) {
-    let options = {
+    var options = {
         hostname: hostname,
         port: port,
         path: path,
@@ -1471,20 +1760,24 @@ function notify_http(hostname, port, path, method, headers, bodyString, callback
         headers: headers
     };
 
-    const req = http.request(options, (res) => {
-        let fullBody = '';
+    var req = http.request(options, (res) => {
+        var fullBody = '';
         res.on('data', (chunk) => {
             fullBody += chunk.toString();
         });
+
         res.on('end', () => {
             console.log('--------------------------------------------------------------------------');
             console.log(fullBody);
             console.log('[notify_http response : ' + res.statusCode + ']');
+
             callback('200', res);
         });
     });
+
     req.on('error', (e) => {
         console.log('[forward_http] problem with request: ' + e.message);
+
         callback('404-7');
     });
 
@@ -1500,6 +1793,7 @@ function notify_http(hostname, port, path, method, headers, bodyString, callback
     }
     req.end();
 }
+
 function forward_http(forwardcbhost, forwardcbport, f_url, f_method, f_headers, f_body, callback) {
     var options = {
         hostname: forwardcbhost,
@@ -1548,6 +1842,14 @@ function forward_http(forwardcbhost, forwardcbport, f_url, f_method, f_headers, 
     }
     req.end();
 }
+
+if (process.env.NODE_ENV == 'production') {
+    console.log("Production Mode");
+}
+else if (process.env.NODE_ENV == 'development') {
+    console.log("Development Mode");
+}
+
 function scheduleGc() {
     if (!global.gc) {
         console.log('Garbage collection is not exposed');
@@ -1556,23 +1858,13 @@ function scheduleGc() {
 
     // schedule next gc within a random interval (e.g. 15-45 minutes)
     // tweak this based on your app's memory usage
-    let nextMinutes = Math.random() * 30 + 15;
+    var nextMinutes = Math.random() * 30 + 15;
 
     setTimeout(() => {
         global.gc();
         console.log('Manual gc', process.memoryUsage());
         scheduleGc();
     }, nextMinutes * 60 * 1000);
-}
-
-if (process.env.NODE_ENV == 'production') {
-    console.log("Production Mode");
-}
-else if (process.env.NODE_ENV == 'development') {
-    console.log("Development Mode");
-}
-else {
-    console.log("Unknown Mode");
 }
 
 // call this in the startup script of your app (once per process)

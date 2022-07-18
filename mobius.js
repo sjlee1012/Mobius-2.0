@@ -22,7 +22,7 @@ try {
 }
 catch (e) {
     conf.csebaseport = "7579";
-    conf.dbpass = "dksdlfduq2";
+    conf.dbpass = "admin";
     fs.writeFileSync('conf.json', JSON.stringify(conf, null, 4), 'utf8');
 }
 
@@ -34,7 +34,7 @@ global.usecsebase           = 'Mobius';
 global.usecseid             = '/Mobius2';
 global.usecsebaseport       = conf.csebaseport;
 
-global.usedbhost            = 'localhost';
+global.usedbhost            = '127.0.0.1';
 global.usedbpass            = conf.dbpass;
 
 
