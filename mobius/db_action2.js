@@ -14,63 +14,59 @@
  * @author Il Yeup Ahn [iyahn@keti.re.kr]
  */
 
-var fs = require('fs');
+// https://nodeman.tistory.com/9
 
-var conf = {};
-try {
-    conf = JSON.parse(fs.readFileSync('conf.json', 'utf8'));
-}
-catch (e) {
-    conf.csebaseport = "7579";
-    conf.dbpass = "admin";
-    fs.writeFileSync('conf.json', JSON.stringify(conf, null, 4), 'utf8');
-}
-
-global.defaultbodytype      = 'json';
-
-// my CSE information
-global.usecsetype           = 'in'; // select 'in' or 'mn' or asn'
-global.usecsebase           = 'Mobius';
-global.usecseid             = '/Mobius2';
-global.usecsebaseport       = conf.csebaseport;
-
-global.usedbhost            = '127.0.0.1';
-global.usedbpass            = conf.dbpass;
+const mysql = require('mysql2');
 
 
-global.usepxywsport         = '7577';
-global.usepxymqttport       = '7578';
+function createPoolOption(host, port, user, password, database='mobiusdb') {
+    let options = {
+        host: host,
+        port: port,
+        user: user,
+        password: password,
+        database: database,
+        connectionLimit: 100,
+        waitForConnections: true,
+        queueLimit: 0,
+        debug: false,
+    };
 
-global.use_sgn_man_port     = '7599';
-global.use_cnt_man_port     = '7583';
-global.use_hit_man_port     = '7594';
-
-global.usetsagentport       = '7582';
-
-global.use_mqtt_broker      = 'localhost'; // mqttbroker for mobius
-
-global.use_secure           = 'disable';
-global.use_mqtt_port        = '1883';
-if(use_secure === 'enable') {
-    use_mqtt_port           = '8883';
+    return options;
 }
 
-global.useaccesscontrolpolicy = 'disable';
+const options = createPoolOption('127.0.0.1', 3306, 'root','admin' );
+const pool = mysql.createPool(options);
 
-global.wdt = require('./wdt');
+const promisePool = pool.promise();
+
+async function findById(id) {
+    try {
+        const result = await promisePool.query('SELECT * FROM lookup;', [id]);
+        return result;
+    } catch (err) {
+        return err;
+    }
+}
+
+result = findById('1');
+console.log(result);
 
 
-global.allowed_ae_ids = [];
-//allowed_ae_ids.push('ryeubi');
 
-global.allowed_app_ids = [];
-//allowed_app_ids.push('APP01');
-
-global.usesemanticbroker    = '10.10.202.114';
-
-global.uservi = '2a';
-
-global.useCert = 'disable';
-
-// CSE core
-require('./app');
+//
+// const connection = mysql.createConnection({
+//     host: '127.0.01',
+//     port: 3306,
+//     user: 'root',
+//     password: 'admin',
+//     database: 'mobiusdb'
+// });
+// connection.query(
+//     'SELECT * FROM lookup', [],
+//     function(err, results, fields){
+//         console.log(results); // results는 서버로부터 반환된 행들을 포함한다.
+//         console.log(fields); // fields는 results에 관한 부가적인 메타데이터들을 포함한다.
+//     }
+// );
+//

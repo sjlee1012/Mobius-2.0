@@ -37,7 +37,7 @@ var _this = this;
 
 var ws_state = 'init';
 
-// ������ �����մϴ�.
+
 var ws_app = express();
 
 var usewscbhost = 'localhost'; // pxyws to mobius

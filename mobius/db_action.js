@@ -14,14 +14,39 @@
  * @author Il Yeup Ahn [iyahn@keti.re.kr]
  */
 
-var mysql = require('mysql');
-
+const mysql = require('mysql');
+const db_sql = require("./sql_action");
+const moment = require("moment/moment");
 var mysql_pool = null;
 
-//var _this = this;
+
+function executeQuery(pool, query, connection, callback) {
+    connection.query({sql:query, timeout:60000}, function (err, rows, fields) {
+        if (err) {
+            return callback(err, null);
+        }
+        return callback(null, rows);
+    });
+}
 
 
-exports.connect = function (host, port, user, password, callback) {
+createPool = function(host, port, user, password) {
+    mysql_pool = mysql.createPool({
+        host: host,
+        port: port,
+        user: user,
+        password: password,
+        database: 'mobiusdb',
+        connectionLimit: 100,
+        waitForConnections: true,
+        debug: false,
+        acquireTimeout: 50000,
+        queueLimit: 0
+    });
+    if (mysql_pool) return '1';
+}
+
+connect = function (host, port, user, password, callback) {
     mysql_pool = mysql.createPool({
         host: host,
         port: port,
@@ -35,62 +60,25 @@ exports.connect = function (host, port, user, password, callback) {
         queueLimit: 0
     });
 
-    callback('1');
+    if (mysql_pool) callback('1');
 };
 
-
-// function executeQuery(pool, query, callback) {
-//     pool.getConnection(function (err, connection) {
-//         if (err) {
-//             return callback(err, null);
-//         }
-//         else if (connection) {
-//             connection.query({sql:query, timeout:60000}, function (err, rows, fields) {
-//                 connection.release();
-//                 if (err) {
-//                     return callback(err, null);
-//                 }
-//                 return callback(null, rows);
-//             });
-//         }
-//         else {
-//             return callback(true, "No Connection");
-//         }
-//     });
-// }
-
-function executeQuery(pool, query, connection, callback) {
-    connection.query({sql:query, timeout:60000}, function (err, rows, fields) {
-        if (err) {
-            return callback(err, null);
-        }
-        return callback(null, rows);
-    });
-}
-
-exports.getConnection = function(callback) {
-    if(mysql_pool == null) {
-        console.error("mysql is not connected");
-        callback(true, "mysql is not connected");
-        return '0';
-    }
-
-    mysql_pool.getConnection((err, connection) => {
-        if (err) {
-            callback('500-5');
-        }
-        else {
-            if (connection) {
+getConnection = function(callback) {
+    if(mysql_pool) {
+        mysql_pool.getConnection((err, connection) => {
+            if (err) {
+                callback('500-5');
+            } else {
                 callback('200', connection);
             }
-            else {
-                callback('500-5');
-            }
-        }
-    });
+        });
+    }
+    else {
+        callback('500-5');
+    }
 };
 
-exports.getResult = function(query, connection, callback) {
+getResult = function(query, connection, callback) {
     if(mysql_pool == null) {
         console.error("mysql is not connected");
         return '0';
@@ -107,3 +95,39 @@ exports.getResult = function(query, connection, callback) {
 };
 
 
+del_req_resource = function (connection) {
+    getConnection((connection) => {
+        db_sql.delete_req(connection, (err, delete_Obj) => {
+            if (!err) {
+                console.log('deleted ' + delete_Obj.affectedRows + ' request resource(s).');
+            }
+        });
+    });
+}
+
+del_expired_resource =  function (connection) {
+    getConnection((connection) => {
+        // this routine is that delete resource expired time exceed et of resource
+        var et = moment().utc().format('YYYYMMDDTHHmmss');
+        db_sql.delete_lookup_et(connection, et, (err) => {
+            if (!err) {
+                console.log('---------------');
+                console.log('delete resources expired et');
+                console.log('---------------');
+            }
+        });
+    });
+}
+
+
+//////////////////////////////////////////////////////////
+// module exports
+
+module.exports = {
+    createPool,
+    connect,
+    getConnection,
+    getResult,
+    del_req_resource,
+    del_expired_resource
+};

@@ -72,11 +72,12 @@ exports.get_hit_all = function(connection, callback) {
 };
 
 exports.set_hit = function(connection, binding, callback) {
-    var _ct = moment().utc().format('YYYYMMDD');
-    var _http = 0;
-    var _mqtt = 0;
-    var _coap = 0;
-    var _ws = 0;
+
+    let _ct = moment().utc().format('YYYYMMDD');
+    let _http = 0;
+    let _mqtt = 0;
+    let _coap = 0;
+    let _ws = 0;
 
     if (binding === 'H') {
         _http = 1;
@@ -91,7 +92,8 @@ exports.set_hit = function(connection, binding, callback) {
         _ws = 1;
     }
 
-    var sql = util.format('INSERT INTO hit (ct, http, mqtt, coap, ws) VALUES (\'%s\', \'%s\', \'%s\', \'%s\', \'%s\') ON DUPLICATE KEY UPDATE http=http+%s, mqtt=mqtt+%s, coap=coap+%s, ws=ws+%s;',
+    let sql = util.format(
+        'INSERT INTO hit (ct, http, mqtt, coap, ws) VALUES (\'%s\', \'%s\', \'%s\', \'%s\', \'%s\') ON DUPLICATE KEY UPDATE http=http+%s, mqtt=mqtt+%s, coap=coap+%s, ws=ws+%s;',
         _ct, _http, _mqtt, _coap, _ws, _http, _mqtt, _coap, _ws);
 
     db.getResult(sql, connection, function (err, results) {
@@ -100,7 +102,8 @@ exports.set_hit = function(connection, binding, callback) {
 };
 
 exports.set_hit_n = function(connection, _ct, _http, _mqtt, _coap, _ws, callback) {
-    var sql = util.format('INSERT INTO hit (ct, http, mqtt, coap, ws) VALUES (\'%s\', \'%s\', \'%s\', \'%s\', \'%s\') ON DUPLICATE KEY UPDATE http=http+%s, mqtt=mqtt+%s, coap=coap+%s, ws=ws+%s;',
+    var sql = util.format(
+        'INSERT INTO hit (ct, http, mqtt, coap, ws) VALUES (\'%s\', \'%s\', \'%s\', \'%s\', \'%s\') ON DUPLICATE KEY UPDATE http=http+%s, mqtt=mqtt+%s, coap=coap+%s, ws=ws+%s;',
         _ct, _http, _mqtt, _coap, _ws, _http, _mqtt, _coap, _ws);
 
     db.getResult(sql, connection, function (err, results) {
@@ -108,12 +111,6 @@ exports.set_hit_n = function(connection, _ct, _http, _mqtt, _coap, _ws, callback
     });
 };
 
-// exports.get_sri_sri = function (connection, ri, callback) {
-//     var sql = util.format('select sri from lookup where ri = \'%s\'', ri);
-//     db.getResult(sql, connection, function (err, results) {
-//         callback(err, results);
-//     });
-// };
 
 exports.get_ri_sri = function (connection, sri, callback) {
     var tid = require('shortid').generate();
@@ -125,12 +122,6 @@ exports.get_ri_sri = function (connection, sri, callback) {
     });
 };
 
-// function set_sri_sri(connection, ri, sri, callback) {
-//     var sql = util.format('insert into sri (ri, sri) value (\'%s\', \'%s\')', ri, sri);
-//     db.getResult(sql, connection, function (err, results) {
-//         callback(err, results);
-//     });
-// }
 
 exports.insert_lookup = function(connection, obj, callback) {
     //console.time('insert_lookup ' + obj.ri);

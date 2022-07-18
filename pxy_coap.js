@@ -29,7 +29,6 @@ var _this = this;
 
 var coap_state = 'init';
 
-//var custom = new process.EventEmitter();
 var events = require('events');
 var coap_custom = new events.EventEmitter();
 
@@ -75,10 +74,6 @@ var coap_rsc_code = {
 };
 
 coap_state = 'init';
-
-//setInterval(function () {
-//    coap_custom.emit('coap_watchdog');
-//}, 2000);
 
 var pxycoap_server = null;
 
@@ -136,7 +131,6 @@ exports.coap_watchdog = function () {
         }
     }
 };
-
 
 var coap_tid = require('shortid').generate();
 wdt.set_wdt(coap_tid, 2, _this.coap_watchdog);

@@ -31,8 +31,6 @@ var cbor = require('cbor');
 
 var responder = require('./mobius/responder');
 
-//var resp_mqtt_client_arr = [];
-//var req_mqtt_client_arr = [];
 var resp_mqtt_rqi_arr = [];
 
 var http_response_q = {};
@@ -43,19 +41,14 @@ global.NOPRINT = 'true';
 var _this = this;
 
 var mqtt_state = 'init';
-//var custom = new process.EventEmitter();
-var events = require('events');
-//var mqtt_custom = new events.EventEmitter();
 
-// ������ �����մϴ�.
+var events = require('events');
+
+
 var mqtt_app = express();
 
 
 var usemqttcbhost = 'localhost'; // pxymqtt to mobius
-
-
-
-//require('./mobius/ts_agent');
 
 //var cache_limit = 64;
 var cache_ttl = 3; // count
